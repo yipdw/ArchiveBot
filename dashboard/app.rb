@@ -35,9 +35,6 @@ Feed.redis = R
 
 App = Webmachine::Application.new do |app|
   sprockets = Sprockets::Environment.new
-  sprockets.append_path(File.expand_path('../assets/stylesheets', __FILE__))
-  sprockets.append_path(File.expand_path('../assets/javascripts', __FILE__))
-  sprockets.append_path(File.expand_path('../assets/fonts', __FILE__))
   sprockets.append_path(File.expand_path('../assets/images', __FILE__))
   sprockets.append_path(File.expand_path('../vendor/assets/fonts', __FILE__))
   sprockets.append_path(File.expand_path('../vendor/assets/javascripts', __FILE__))
