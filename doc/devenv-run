@@ -1,0 +1,72 @@
+PREREQUISITE
+------------
+
+sudo do-release-upgrade -d; accept all changes
+restart
+
+
+PACKAGES
+--------
+
+sudo apt-get -y install tmux ircd-hybrid irssi tcl8.5 jq bundler ruby-dev couchdb
+
+
+CHECKOUT
+--------
+
+git clone https://github.com/ArchiveTeam/ArchiveBot
+
+
+REDIS
+-----
+
+cd $HOME
+wget http://download.redis.io/releases/redis-3.0.0.tar.gz
+wget https://raw.githubusercontent.com/antirez/redis-hashes/master/README
+sha1sum redis-3.0.0.tar.gz
+(compare the sha1s)
+cd redis-3.0.0
+make && make test
+sudo utils/install_server.sh
+sudo /etc/init.d/redis_6379 restart
+
+
+COUCHDB (on the chopping block, at least)
+-----------------------------------------
+
+curl http://127.0.0.1:5984/ (and verify)
+
+
+COUCHDB INSTALL
+---------------
+
+curl -X PUT http://127.0.0.1:5984/archivebot
+curl -X PUT http://127.0.0.1:5984/archivebot_logs
+
+COUCHDB SETUP
+-------------
+
+cd $HOME/ArchiveBot/db/design_docs
+
+cat archive_urls.json    | jq 'del(._rev)' | curl -X PUT http://127.0.0.1:5984/archivebot/_design/archive_urls -d @-
+cat ignore_patterns.json | jq 'del(._rev)' | curl -X PUT http://127.0.0.1:5984/archivebot/_design/ignore_patterns -d @-
+cat jobs.json            | jq 'del(._rev)' | curl -X PUT http://127.0.0.1:5984/archivebot/_design/jobs -d @-
+cat user_agents.json     | jq 'del(._rev)' | curl -X PUT http://127.0.0.1:5984/archivebot/_design/user_agents -d @-
+
+BOT SETUP
+---------
+
+cd $HOME/ArchiveBot
+bundle install --path=bundle
+
+BOT RUN
+-------
+
+cd $HOME/ArchiveBot/bot
+bundle exec ruby bot.rb -s irc://localhost:6667 -c '#atbot'
+
+PIPELINE
+--------
+
+cd $HOME/ArchiveBot/pipeline
+
