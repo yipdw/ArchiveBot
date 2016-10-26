@@ -58,8 +58,6 @@ class Control(object):
         self.items_queued_outstanding = 0
         self.redis_url = redis_url
         self.log_queue = Queue()
-        self.bytes_downloaded_queue = Queue()
-        self.item_count_queue = Queue()
 
         self.connect()
 
@@ -142,9 +140,7 @@ class Control(object):
             self.mark_aborted_script(keys=[ident], args=[self.log_channel])
 
     def update_bytes_downloaded(self, ident, size):
-        self.bytes_downloaded_queue.put({'ident': ident,
-                                         'bytes': size
-                                       })
+        self.log_queue.put({'ident': ident, 'bytes': size, 'type': 'bytes_downloaded'})
 
     def update_items_downloaded(self, count):
         self.items_downloaded_outstanding += count
@@ -153,11 +149,13 @@ class Control(object):
         self.items_queued_outstanding += count
 
     def flush_item_counts(self, ident):
-        self.item_count_queue.put({'ident': ident,
-                                  'items_downloaded':
-                                      self.items_downloaded_outstanding,
-                                  'items_queued': self.items_queued_outstanding
-                                 })
+        self.log_queue.put({
+            'ident': ident,
+            'items_downloaded': self.items_downloaded_outstanding,
+            'items_queued': self.items_queued_outstanding,
+            'type': 'item_counts'
+        })
+
         self.items_downloaded_outstanding = 0
         self.items_queued_outstanding = 0
 
@@ -182,65 +180,40 @@ class Control(object):
     # This function is a thread used to asynchronously ship logs to redis for
     # this job, in a daemonic thread
     def ship_logs(self):
+        def ship_one(self, entry, pipe):
+            if entry['type'] is 'log':
+                self.log_script(keys=entry['keys'], args=entry['args'], client=pipe)
+            elif entry['type'] is 'bytes_downloaded':
+                pipe.hincrby(entry['ident'], 'bytes_downloaded', entry['bytes'])
+            elif entry['type'] is 'item_counts':
+                pipe.hincrby(entry['ident'], 'items_downloaded', entry['items_downloaded'])
+                pipe.hincrby(entry['ident'], 'items_queued', entry['items_queued'])
+
         while True:
-            # Ship a log entry
-            try:
-                entry = self.log_queue.get(timeout=5)
-                with conn(self):
-                    self.log_script(keys=entry['keys'], args=entry['args'])
-                self.log_queue.task_done()
-            except Empty:
-                pass
-            except ConnectionError:
-                self.log_queue.task_done()
-
-            # Ship bytes entries in aggregate
-            bytes_entries = {}
-            try:
-                entry = self.bytes_downloaded_queue.get(block=False)
-                if entry['ident'] in bytes_entries:
-                    bytes_entries[entry['ident']] += int(entry['bytes'])
-                else:
-                    bytes_entries[entry['ident']] = int(entry['bytes'])
-                self.bytes_downloaded_queue.task_done()
-            except Empty:
-                pass
+            entry = self.log_queue.get()
 
             try:
-                with conn(self):
-                    for ident, count in bytes_entries:
-                        self.redis.hincrby(ident, 'bytes_downloaded', count)
+                with conn(self), self.redis.pipeline() as pipe:
+                    shipped = 0
+
+                    while True:
+                        ship_one(self, entry, pipe)
+                        self.log_queue.task_done()
+                        shipped = shipped + 1
+
+                        if self.log_queue.empty() or shipped >= 32:
+                            pipe.execute()
+                            break
+                        else:
+                            entry = self.log_queue.get()
+
             except ConnectionError:
                 pass
-
-            # Ship count entries in aggregate
-            counts_entries = {}
-            try:
-                entry = self.item_count_queue.get(block=False)
-                if entry['ident'] in counts_entries:
-                    counts_entries[entry['ident']][0] += int(entry['items_downloaded'])
-                    counts_entries[entry['ident']][1] += int(entry['items_queued'])
-                else:
-                    counts_entries[entry['ident']] = [
-                        int(entry['items_downloaded']),
-                        int(entry['items_queued'])
-                    ]
-                self.item_count_queue.task_done()
-            except Empty:
-                pass
-
-            try:
-                with conn(self):
-                    for ident, data in counts_entries:
-                        self.redis.hincrby(ident, 'items_downloaded', data[0])
-                        self.redis.hincrby(ident, 'items_queued', data[1])
-            except ConnectionError:
-                pass
-
 
     def log(self, packet, ident, log_key):
         self.log_queue.put({'keys': [ident],
-                            'args': [json.dumps(packet), self.log_channel, log_key]
+                            'args': [json.dumps(packet), self.log_channel, log_key],
+                            'type': 'log'
                           })
 
     def get_url_file(self, ident):
